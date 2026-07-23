@@ -1,0 +1,16 @@
+{
+  "name": "oscar-backend",
+  "version": "1.0.0",
+  "description": "Oscar Platform Backend",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "firebase-admin": "^12.6.0"
+  }
+}
