@@ -13,9 +13,9 @@ const processDailyTask = async (req, res) => {
         const rewardsMap = {
             S1: 2,
             S2: 4,
-            O1: 15,
-            O2: 30,
-            A1: 60
+            O1: 16,
+            O2: 38,
+            A1: 67
         };
 
         // 2. جلب بيانات المستخدم من الفايربيس
