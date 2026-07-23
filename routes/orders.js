@@ -5,58 +5,47 @@ const router = express.Router();
 
 // 1️⃣ معالجة المهمة اليومية وقبولها تلقائياً بعد 3 ثوانٍ
 const processDailyTask = async (req, res) => {
-  try {
-    const db = admin.firestore();
-    const { userId, planType, taskId } = req.body;
+    try {
+        const db = admin.firestore();
+        const { userId, planType, taskId } = req.body;
 
-    // تحديد العائد اليومي حسب خطط الاشتراك المعتمدة
-    let dailyReward = 0;
-    if (planType === "O1") dailyReward = 15;
-    else if (planType === "O2") dailyReward = 30;
-    else if (planType === "A1") dailyReward = 60;
-    else dailyReward = req.body.rewardAmount || 10;
+        // 1. خريطة أسعار الاشتراكات
+        const rewardsMap = {
+            S1: 2,
+            S2: 4,
+            O1: 15,
+            O2: 30,
+            A1: 60
+        };
 
-    let docId = taskId;
+        // 2. جلب بيانات المستخدم من الفايربيس
+        const userRef = db.collection('users').doc(userId);
+        const userDoc = await userRef.get();
 
-    if (!docId) {
-      const taskRef = await db.collection("tasks").add({
-        userId: userId || req.body.uid || "unknown",
-        planType: planType || "default",
-        rewardAmount: dailyReward,
-        status: "pending",
-        createdAt: admin.firestore.FieldValue.serverTimestamp()
-      });
-      docId = taskRef.id;
-    }
-
-    res.status(200).json({
-      success: true,
-      taskId: docId,
-      message: "تم إرسال المهمة للوحة الإدارة وسيتم القبول آلياً خلال 3 ثوانٍ ⏳"
-    });
-
-    setTimeout(async () => {
-      try {
-        await db.collection("tasks").doc(docId).update({
-          status: "accepted",
-          acceptedAt: admin.firestore.FieldValue.serverTimestamp()
-        });
-
-        if (userId) {
-          await db.collection("users").doc(userId).update({
-            taskBalance: admin.firestore.FieldValue.increment(dailyReward)
-          });
+        if (!userDoc.exists) {
+            return res.status(404).json({ success: false, message: "المستخدم غير موجود" });
         }
 
-        console.log(`🤖 تم قبول المهمة اليومية (${docId}) تلقائياً وإضافة $${dailyReward} لرصيد المستخدم!`);
-      } catch (err) {
-        console.error("خطأ أثناء معالجة القبول التلقائي للمهمة:", err.message);
-      }
-    }, 3000);
+        const userData = userDoc.data();
 
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
+        // 3. تحديد نوع الاشتراك وتحديد المكافأة
+        const userSub = planType || userData.subscription || userData.plan;
+        const reward = rewardsMap[userSub] || 0;
+
+        // 4. حساب الرصيد الجديد
+        const newBalance = (userData.balance || 0) + reward;
+
+        // 5. تحديث الفايربيس
+        await userRef.update({
+            balance: newBalance,
+            dailyReward: reward
+        });
+
+        return res.json({ success: true, reward, newBalance });
+
+    } catch (error) {
+        return res.status(500).json({ success: false, message: error.message });
+    }
 };
 
 router.post("/task/claim", processDailyTask);
