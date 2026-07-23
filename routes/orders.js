@@ -29,7 +29,7 @@ const processDailyTask = async (req, res) => {
         const userData = userDoc.data();
 
         // 3. تحديد نوع الاشتراك وتحديد المكافأة
-        const userSub = planType || userData.subscription || userData.plan;
+const userSub = userData.subscription || planType || 'S1';
         const reward = rewardsMap[userSub] || 0;
 
         // 4. حساب الرصيد الجديد
