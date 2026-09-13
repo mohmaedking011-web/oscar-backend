@@ -65,17 +65,17 @@ app.post("/api/generate-wallet", async (req, res) => {
     const { userId } = req.body;
     if (!userId) return res.status(400).json({ error: "userId required" });
 
-    // إنشاء محفظة جديدة توافق TronWeb v6
-    const account = await tronWeb.createRandom();
+    // إنشاء محفظة فرعية جديدة بطريقة متوافقة ومضمونة
+    const account = await TronWeb.createAccount();
 
     await db.collection("users").doc(userId).set({
-      depositAddress: account.address,
+      depositAddress: account.address.base58,
       depositPrivateKey: account.privateKey
     }, { merge: true });
 
     res.json({
       success: true,
-      address: account.address
+      address: account.address.base58
     });
   } catch (error) {
     console.error("Error generating wallet:", error);
