@@ -26,26 +26,23 @@ if (!admin.apps.length) {
 
 const db = admin.firestore();
 
-// 2. إعداد TronWeb باستهلاك المفتاح الخاص من البيئة
+// 2. إعداد TronWeb
 const tronWeb = new TronWeb({
   fullHost: "https://api.trongrid.io",
   headers: { "TRON-PRO-API-KEY": process.env.TRONGRID_API_KEY || "" },
   privateKey: process.env.ADMIN_PRIVATE_KEY || undefined
 });
 
-const USDT_CONTRACT_ADDRESS = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"; // عقد USDT TRC20 الرسمي
+const USDT_CONTRACT_ADDRESS = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 
 const app = express();
 
-// إعداد CORS بالكامل
+// إعداد CORS للجميع لمنع التعارض مع o2.oscar1.net
 app.use(cors({
-  origin: true, // السماح لجميع المصادر مع التعامل مع Preflight
-  credentials: true,
+  origin: "*",
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"]
 }));
-
-app.options("*", cors());
 
 app.use(express.json());
 
@@ -65,7 +62,7 @@ app.post("/api/generate-wallet", async (req, res) => {
     const { userId } = req.body;
     if (!userId) return res.status(400).json({ error: "userId required" });
 
-    // إنشاء محفظة فرعية جديدة بطريقة متوافقة ومضمونة
+    // إنشاء محفظة فرعية توافق TronWeb
     const account = await TronWeb.createAccount();
 
     await db.collection("users").doc(userId).set({
@@ -83,7 +80,7 @@ app.post("/api/generate-wallet", async (req, res) => {
   }
 });
 
-// 4. مسار السحب التلقائي (الأدمن يدفع للمستخدم)
+// 4. مسار السحب التلقائي
 app.post("/api/withdraw-auto", async (req, res) => {
   try {
     const { toAddress, amount } = req.body;
@@ -106,11 +103,11 @@ app.post("/api/withdraw-auto", async (req, res) => {
   }
 });
 
-// 5. وظيفة مراقبة الإيداعات والتجميع التلقائي (Auto-Sweep Cron Job)
+// 5. مراقبة الإيداعات التلقائية (Auto-Sweep Cron Job)
 async function checkDeposits() {
   try {
     const usersSnapshot = await db.collection("users").get();
-    const ADMIN_WALLET = process.env.ADMIN_WALLET_ADDRESS; // عنوان محفظتك المركزية لتجميع الأموال
+    const ADMIN_WALLET = process.env.ADMIN_WALLET_ADDRESS;
 
     for (const doc of usersSnapshot.docs) {
       const userData = doc.data();
@@ -128,19 +125,16 @@ async function checkDeposits() {
 
       if (data.data && data.data.length > 0) {
         for (const tx of data.data) {
-          // مقارنة العناوين بغض النظر عن حالة الحروف
           if (tx.to && tx.to.toLowerCase() === userData.depositAddress.toLowerCase()) {
             const txDoc = await db.collection("processed_txs").doc(tx.transaction_id).get();
 
             if (!txDoc.exists) {
               const amountReceived = parseFloat(tx.value) / 1e6;
 
-              // 1. تحديث رصيد المستخدم في قاعدة البيانات
               await db.collection("users").doc(doc.id).update({
                 balance: admin.firestore.FieldValue.increment(amountReceived)
               });
 
-              // 2. تسجيل المعاملة لتفادي التكرار
               await db.collection("processed_txs").doc(tx.transaction_id).set({
                 userId: doc.id,
                 amount: amountReceived,
@@ -149,7 +143,6 @@ async function checkDeposits() {
 
               console.log(`✅ Successfully credited ${amountReceived} USDT to user ${doc.id}`);
 
-              // 3. تحويل الأموال تلقائياً من محفظة المستخدم إلى المحفظة المركزية (Auto-Sweep)
               if (ADMIN_WALLET && userData.depositPrivateKey) {
                 try {
                   const userTronWeb = new TronWeb({
@@ -164,7 +157,7 @@ async function checkDeposits() {
                   const sweepTx = await contract.transfer(ADMIN_WALLET, amountInSun).send();
                   console.log(`🚀 Auto-swept ${amountReceived} USDT to Admin Wallet. TXID: ${sweepTx}`);
                 } catch (sweepErr) {
-                  console.error("⚠️ Auto-sweep error (Check TRX balance for gas fee):", sweepErr.message);
+                  console.error("⚠️ Auto-sweep error:", sweepErr.message);
                 }
               }
             }
@@ -177,7 +170,6 @@ async function checkDeposits() {
   }
 }
 
-// تشغيل الفحص الدوري كل 60 ثانية
 setInterval(checkDeposits, 60000);
 
 const PORT = process.env.PORT || 3000;
