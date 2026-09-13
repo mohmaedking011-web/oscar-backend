@@ -228,7 +228,7 @@ async function checkDeposits() {
   }
 }
 
-setInterval(checkDeposits, 60000);
+setInterval(checkDeposits, 300000);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
