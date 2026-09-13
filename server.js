@@ -37,23 +37,15 @@ const USDT_CONTRACT_ADDRESS = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"; // عقد US
 
 const app = express();
 
-// --- تعديل CORS المباشر للحل المكتمل ---
-app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "*");
-  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
-  
-  if (req.method === "OPTIONS") {
-    return res.status(200).end();
-  }
-  next();
-});
-
+// إعداد CORS بالكامل
 app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  origin: true, // السماح لجميع المصادر مع التعامل مع Preflight
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"]
 }));
+
+app.options("*", cors());
 
 app.use(express.json());
 
