@@ -28,9 +28,9 @@ const db = admin.firestore();
 
 // 2. إعداد TronWeb باستهلاك المفتاح الخاص من البيئة
 const tronWeb = new TronWeb({
-  fullHost: 'https://api.trongrid.io',
+  fullHost: "https://api.trongrid.io",
   headers: { "TRON-PRO-API-KEY": process.env.TRONGRID_API_KEY || "" },
-  privateKey: process.env.ADMIN_PRIVATE_KEY
+  privateKey: process.env.ADMIN_PRIVATE_KEY || undefined
 });
 
 const USDT_CONTRACT_ADDRESS = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"; // عقد USDT TRC20 الرسمي
@@ -65,16 +65,17 @@ app.post("/api/generate-wallet", async (req, res) => {
     const { userId } = req.body;
     if (!userId) return res.status(400).json({ error: "userId required" });
 
-    const account = await tronWeb.createAccount();
-    
+    // إنشاء محفظة جديدة توافق TronWeb v6
+    const account = await tronWeb.createRandom();
+
     await db.collection("users").doc(userId).set({
-      depositAddress: account.address.base58,
+      depositAddress: account.address,
       depositPrivateKey: account.privateKey
     }, { merge: true });
 
     res.json({
       success: true,
-      address: account.address.base58
+      address: account.address
     });
   } catch (error) {
     console.error("Error generating wallet:", error);
@@ -110,7 +111,7 @@ async function checkDeposits() {
   try {
     const usersSnapshot = await db.collection("users").get();
     const ADMIN_WALLET = process.env.ADMIN_WALLET_ADDRESS; // عنوان محفظتك المركزية لتجميع الأموال
-    
+
     for (const doc of usersSnapshot.docs) {
       const userData = doc.data();
       if (!userData.depositAddress) continue;
@@ -130,7 +131,7 @@ async function checkDeposits() {
           // مقارنة العناوين بغض النظر عن حالة الحروف
           if (tx.to && tx.to.toLowerCase() === userData.depositAddress.toLowerCase()) {
             const txDoc = await db.collection("processed_txs").doc(tx.transaction_id).get();
-            
+
             if (!txDoc.exists) {
               const amountReceived = parseFloat(tx.value) / 1e6;
 
@@ -152,7 +153,7 @@ async function checkDeposits() {
               if (ADMIN_WALLET && userData.depositPrivateKey) {
                 try {
                   const userTronWeb = new TronWeb({
-                    fullHost: 'https://api.trongrid.io',
+                    fullHost: "https://api.trongrid.io",
                     headers: { "TRON-PRO-API-KEY": process.env.TRONGRID_API_KEY || "" },
                     privateKey: userData.depositPrivateKey
                   });
