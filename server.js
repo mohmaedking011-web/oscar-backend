@@ -80,7 +80,65 @@ app.post("/api/generate-wallet", async (req, res) => {
   }
 });
 
-// 4. مسار السحب التلقائي
+// 4. مسار الفحص التلقائي الفوري المخصص لصفحة الشحن (يحل مشكلة الـ 404)
+app.post("/api/check-deposit", async (req, res) => {
+  try {
+    const { userId, address } = req.body;
+    if (!userId || !address) {
+      return res.status(400).json({ success: false, message: "Missing params" });
+    }
+
+    // جلب المعاملات الخاصة بالمحفظة مباشرة من TronGrid
+    const response = await fetch(
+      `https://api.trongrid.io/v1/accounts/${address}/transactions/trc20?contract_address=${USDT_CONTRACT_ADDRESS}`,
+      {
+        headers: {
+          "TRON-PRO-API-KEY": process.env.TRONGRID_API_KEY || ""
+        }
+      }
+    );
+    const data = await response.json();
+
+    if (data.data && data.data.length > 0) {
+      for (const tx of data.data) {
+        if (tx.to && tx.to.toLowerCase() === address.toLowerCase()) {
+          const txDoc = await db.collection("processed_txs").doc(tx.transaction_id).get();
+
+          if (!txDoc.exists) {
+            const amountReceived = parseFloat(tx.value) / 1e6;
+
+            // إضافة الرصيد للمستخدم في Firestore
+            await db.collection("users").doc(userId).update({
+              balance: admin.firestore.FieldValue.increment(amountReceived)
+            });
+
+            // تسجيل العملية لمنع التكرار
+            await db.collection("processed_txs").doc(tx.transaction_id).set({
+              userId: userId,
+              amount: amountReceived,
+              timestamp: admin.firestore.FieldValue.serverTimestamp()
+            });
+
+            console.log(`✅ Instant Auto-Deposit: Credited ${amountReceived} USDT to user ${userId}`);
+
+            return res.json({
+              success: true,
+              deposited: true,
+              amount: amountReceived
+            });
+          }
+        }
+      }
+    }
+
+    return res.json({ success: true, deposited: false });
+  } catch (error) {
+    console.error("Check deposit endpoint error:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// 5. مسار السحب التلقائي
 app.post("/api/withdraw-auto", async (req, res) => {
   try {
     const { toAddress, amount } = req.body;
@@ -103,7 +161,7 @@ app.post("/api/withdraw-auto", async (req, res) => {
   }
 });
 
-// 5. مراقبة الإيداعات التلقائية (Auto-Sweep Cron Job)
+// 6. مراقبة الإيداعات التلقائية الشاملة (Auto-Sweep Cron Job)
 async function checkDeposits() {
   try {
     const usersSnapshot = await db.collection("users").get();
