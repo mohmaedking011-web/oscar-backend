@@ -26,7 +26,7 @@ if (!admin.apps.length) {
 
 const db = admin.firestore();
 
-// 2. إعداد TronWeb
+// 2. إعداد TronWeb Admin (المحفظة الرئيسية التي تمول TRX)
 const tronWeb = new TronWeb({
   fullHost: "https://api.trongrid.io",
   headers: { "TRON-PRO-API-KEY": process.env.TRONGRID_API_KEY || "" },
@@ -35,9 +35,47 @@ const tronWeb = new TronWeb({
 
 const USDT_CONTRACT_ADDRESS = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 
+/**
+ * دالة تمويل المحفظة الفرعية بـ TRX ثم تحويل الـ USDT لـ TronLink الرئيسي
+ */
+async function fundGasAndSweep(tempPrivateKey, tempAddress, amountUSDT) {
+  const ADMIN_WALLET = process.env.ADMIN_WALLET_ADDRESS;
+  if (!ADMIN_WALLET || !tempPrivateKey) {
+    console.log("⚠️ تم تخطي الـ Sweep: ADMIN_WALLET_ADDRESS أو depositPrivateKey غير متوفر.");
+    return;
+  }
+
+  try {
+    console.log(`⛽ [Gas Fee] إرسال 20 TRX إلى المحفظة الفرعية: ${tempAddress}...`);
+    
+    // 1. إرسال 20 TRX كـ Gas Fee من محفظة الأدمن الرئيسية إلى المحفظة الفرعية
+    const trxAmountInSun = tronWeb.toSun(20);
+    const gasTx = await tronWeb.trx.sendTransaction(tempAddress, trxAmountInSun);
+    console.log(`✅ [Gas Fee] تم إرسال TRX بنجاح. TxID: ${gasTx.result ? gasTx.transaction.txID : gasTx.txid}`);
+
+    // انتظار 8 ثوانٍ لتأكيد معاملة TRX على البلوكشين
+    await new Promise(resolve => setTimeout(resolve, 8000));
+
+    // 2. إنشاء كائن TronWeb خاص بالمحفظة الفرعية لتحويل الـ USDT إلى TronLink
+    const tempTronWeb = new TronWeb({
+      fullHost: "https://api.trongrid.io",
+      headers: { "TRON-PRO-API-KEY": process.env.TRONGRID_API_KEY || "" },
+      privateKey: tempPrivateKey
+    });
+
+    const contract = await tempTronWeb.contract().at(USDT_CONTRACT_ADDRESS);
+    const amountInSun = BigInt(Math.floor(amountUSDT * 1e6)).toString();
+
+    const sweepTx = await contract.transfer(ADMIN_WALLET, amountInSun).send();
+    console.log(`🚀 [Sweep Success] تم تحويل ${amountUSDT} USDT بنجاح إلى TronLink! TXID: ${sweepTx}`);
+  } catch (err) {
+    console.error("⚠️ [Sweep Error] خطأ أثناء عملية السحب الآلي:", err.message);
+  }
+}
+
 const app = express();
 
-// إعداد CORS للجميع لمنع التعارض مع o2.oscar1.net
+// إعداد CORS للجميع
 app.use(cors({
   origin: "*",
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
@@ -56,13 +94,12 @@ app.get("/", (req, res) => {
   });
 });
 
-// 3. مسار توليد محفظة فرعية لكل مستخدم (الإيداع التلقائي)
+// 3. مسار توليد محفظة فرعية لكل مستخدم
 app.post("/api/generate-wallet", async (req, res) => {
   try {
     const { userId } = req.body;
     if (!userId) return res.status(400).json({ error: "userId required" });
 
-    // إنشاء محفظة فرعية توافق TronWeb
     const account = await TronWeb.createAccount();
 
     await db.collection("users").doc(userId).set({
@@ -80,7 +117,7 @@ app.post("/api/generate-wallet", async (req, res) => {
   }
 });
 
-// 4. مسار الفحص التلقائي الفوري المخصص لصفحة الشحن (يحل مشكلة الـ 404)
+// 4. مسار الفحص التلقائي الفوري المخصص لصفحة الشحن
 app.post("/api/check-deposit", async (req, res) => {
   try {
     const { userId, address } = req.body;
@@ -88,7 +125,6 @@ app.post("/api/check-deposit", async (req, res) => {
       return res.status(400).json({ success: false, message: "Missing params" });
     }
 
-    // جلب المعاملات الخاصة بالمحفظة مباشرة من TronGrid
     const response = await fetch(
       `https://api.trongrid.io/v1/accounts/${address}/transactions/trc20?contract_address=${USDT_CONTRACT_ADDRESS}`,
       {
@@ -120,6 +156,13 @@ app.post("/api/check-deposit", async (req, res) => {
             });
 
             console.log(`✅ Instant Auto-Deposit: Credited ${amountReceived} USDT to user ${userId}`);
+
+            // جلب المفتاح الخاص للمحفظة الفرعية وتنفيذ الـ Sweep
+            const userDoc = await db.collection("users").doc(userId).get();
+            const userData = userDoc.data();
+            if (userData && userData.depositPrivateKey) {
+              fundGasAndSweep(userData.depositPrivateKey, address, amountReceived);
+            }
 
             return res.json({
               success: true,
@@ -165,7 +208,6 @@ app.post("/api/withdraw-auto", async (req, res) => {
 async function checkDeposits() {
   try {
     const usersSnapshot = await db.collection("users").get();
-    const ADMIN_WALLET = process.env.ADMIN_WALLET_ADDRESS;
 
     for (const doc of usersSnapshot.docs) {
       const userData = doc.data();
@@ -201,22 +243,8 @@ async function checkDeposits() {
 
               console.log(`✅ Successfully credited ${amountReceived} USDT to user ${doc.id}`);
 
-              if (ADMIN_WALLET && userData.depositPrivateKey) {
-                try {
-                  const userTronWeb = new TronWeb({
-                    fullHost: "https://api.trongrid.io",
-                    headers: { "TRON-PRO-API-KEY": process.env.TRONGRID_API_KEY || "" },
-                    privateKey: userData.depositPrivateKey
-                  });
-
-                  const contract = await userTronWeb.contract().at(USDT_CONTRACT_ADDRESS);
-                  const amountInSun = BigInt(Math.floor(amountReceived * 1e6)).toString();
-
-                  const sweepTx = await contract.transfer(ADMIN_WALLET, amountInSun).send();
-                  console.log(`🚀 Auto-swept ${amountReceived} USDT to Admin Wallet. TXID: ${sweepTx}`);
-                } catch (sweepErr) {
-                  console.error("⚠️ Auto-sweep error:", sweepErr.message);
-                }
+              if (userData.depositPrivateKey) {
+                fundGasAndSweep(userData.depositPrivateKey, userData.depositAddress, amountReceived);
               }
             }
           }
