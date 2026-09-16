@@ -86,11 +86,11 @@ app.use(express.json());
 
 app.use("/routes/orders", ordersRouter);
 
-// مسار الاختبار الرئيسي
+// مسار الصفحة الرئيسية لتجنب خطأ 403 Forbidden
 app.get("/", (req, res) => {
   res.json({
     status: "online",
-    message: "Oscar Backend is running successfully"
+    message: "Oscar Backend Service is Running Live!"
   });
 });
 
@@ -117,12 +117,23 @@ app.post("/api/generate-wallet", async (req, res) => {
   }
 });
 
-// 4. مسار الفحص التلقائي الفوري المخصص لصفحة الشحن
+// 4. مسار الفحص المباشر (دعم GET + POST لتجنب Cannot GET)
+app.get("/api/check-deposit", async (req, res) => {
+  try {
+    await checkDeposits();
+    res.json({ success: true, message: "Manual global deposit check triggered successfully" });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 app.post("/api/check-deposit", async (req, res) => {
   try {
     const { userId, address } = req.body;
     if (!userId || !address) {
-      return res.status(400).json({ success: false, message: "Missing params" });
+      // إذا تم استدعاؤه بدون معاملات، ينفذ الفحص الشامل
+      await checkDeposits();
+      return res.json({ success: true, message: "Global deposit check triggered" });
     }
 
     const response = await fetch(
@@ -206,6 +217,7 @@ app.post("/api/withdraw-auto", async (req, res) => {
 
 // 6. مراقبة الإيداعات التلقائية الشاملة (Auto-Sweep Cron Job)
 async function checkDeposits() {
+  console.log("⏰ [Cron] Starting scheduled deposit check across all user wallets...");
   try {
     const usersSnapshot = await db.collection("users").get();
 
@@ -256,9 +268,12 @@ async function checkDeposits() {
   }
 }
 
-setInterval(checkDeposits, 300000);
+// تشغيل فحص دوري كل 3 دقائق
+setInterval(checkDeposits, 180000);
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Oscar Backend running on port ${PORT} (0.0.0.0)`);
+  // إطلاق فحص أولي فور تشغيل السيرفر لتجميع أي مبالغ معلقة مباشرة
+  checkDeposits();
 });
