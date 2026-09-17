@@ -26,7 +26,7 @@ if (!admin.apps.length) {
 
 const db = admin.firestore();
 
-// 2. إعداد TronWeb Admin (المحفظة الرئيسية التي تمول TRX)
+// 2. إعداد TronWeb Admin
 const tronWeb = new TronWeb({
   fullHost: "https://api.trongrid.io",
   headers: { "TRON-PRO-API-KEY": process.env.TRONGRID_API_KEY || "" },
@@ -35,9 +35,6 @@ const tronWeb = new TronWeb({
 
 const USDT_CONTRACT_ADDRESS = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 
-/**
- * دالة تمويل المحفظة الفرعية بـ TRX ثم تحويل الـ USDT لـ TronLink الرئيسي
- */
 async function fundGasAndSweep(tempPrivateKey, tempAddress, amountUSDT) {
   const ADMIN_WALLET = process.env.ADMIN_WALLET_ADDRESS;
   if (!ADMIN_WALLET || !tempPrivateKey) {
@@ -48,15 +45,12 @@ async function fundGasAndSweep(tempPrivateKey, tempAddress, amountUSDT) {
   try {
     console.log(`⛽ [Gas Fee] إرسال 20 TRX إلى المحفظة الفرعية: ${tempAddress}...`);
     
-    // 1. إرسال 20 TRX كـ Gas Fee من محفظة الأدمن الرئيسية إلى المحفظة الفرعية
     const trxAmountInSun = tronWeb.toSun(20);
     const gasTx = await tronWeb.trx.sendTransaction(tempAddress, trxAmountInSun);
     console.log(`✅ [Gas Fee] تم إرسال TRX بنجاح. TxID: ${gasTx.result ? gasTx.transaction.txID : gasTx.txid}`);
 
-    // انتظار 8 ثوانٍ لتأكيد معاملة TRX على البلوكشين
     await new Promise(resolve => setTimeout(resolve, 8000));
 
-    // 2. إنشاء كائن TronWeb خاص بالمحفظة الفرعية لتحويل الـ USDT إلى TronLink
     const tempTronWeb = new TronWeb({
       fullHost: "https://api.trongrid.io",
       headers: { "TRON-PRO-API-KEY": process.env.TRONGRID_API_KEY || "" },
@@ -75,7 +69,6 @@ async function fundGasAndSweep(tempPrivateKey, tempAddress, amountUSDT) {
 
 const app = express();
 
-// إعداد CORS للجميع
 app.use(cors({
   origin: "*",
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
@@ -86,7 +79,6 @@ app.use(express.json());
 
 app.use("/routes/orders", ordersRouter);
 
-// مسار الصفحة الرئيسية لتجنب خطأ 403 Forbidden
 app.get("/", (req, res) => {
   res.json({
     status: "online",
@@ -94,7 +86,6 @@ app.get("/", (req, res) => {
   });
 });
 
-// 3. مسار توليد محفظة فرعية لكل مستخدم
 app.post("/api/generate-wallet", async (req, res) => {
   try {
     const { userId } = req.body;
@@ -117,38 +108,41 @@ app.post("/api/generate-wallet", async (req, res) => {
   }
 });
 
-// 3.1 مسار مضاف آمن لتوليد المحافظ لجميع المستخدمين الذين لا يملكون محفظة
-app.get("/api/generate-wallets-for-all", async (req, res) => {
-  try {
-    const usersSnapshot = await db.collection("users").get();
-    let count = 0;
+// مسار التوليد السريع بالخلفية (يمنع الـ Timeout تماماً)
+app.get("/api/generate-wallets-for-all", (req, res) => {
+  // الرد المباشر للمتصفح لتفادي إعادة التشغيل
+  res.json({
+    success: true,
+    message: "Background wallet generation started for all users without wallets. Check logs or Firestore in 1 minute."
+  });
 
-    for (const doc of usersSnapshot.docs) {
-      const userData = doc.data();
-      // توليد محفظة فقط للمستخدم الذي ينقصه العنوان أو المفتاح
-      if (!userData.depositAddress || !userData.depositPrivateKey) {
-        const account = await TronWeb.createAccount();
-        
-        await db.collection("users").doc(doc.id).set({
-          depositAddress: account.address.base58,
-          depositPrivateKey: account.privateKey
-        }, { merge: true });
+  // تنفيذ التوليد في الخلفية
+  (async () => {
+    try {
+      console.log("🔄 Starting async wallet generation...");
+      const usersSnapshot = await db.collection("users").get();
+      let count = 0;
 
-        count++;
+      for (const doc of usersSnapshot.docs) {
+        const userData = doc.data();
+        if (!userData.depositAddress || !userData.depositPrivateKey) {
+          const account = await TronWeb.createAccount();
+          
+          await db.collection("users").doc(doc.id).set({
+            depositAddress: account.address.base58,
+            depositPrivateKey: account.privateKey
+          }, { merge: true });
+
+          count++;
+        }
       }
+      console.log(`✅ Async generation finished: Generated wallets for ${count} users.`);
+    } catch (error) {
+      console.error("❌ Error during async wallet generation:", error);
     }
-
-    res.json({
-      success: true,
-      message: `Generated wallets for ${count} users without affecting existing wallets.`
-    });
-  } catch (error) {
-    console.error("Error bulk generating wallets:", error);
-    res.status(500).json({ success: false, error: error.message });
-  }
+  })();
 });
 
-// 4. مسار الفحص المباشر (دعم GET + POST لتجنب Cannot GET)
 app.get("/api/check-deposit", async (req, res) => {
   try {
     await checkDeposits();
@@ -162,7 +156,6 @@ app.post("/api/check-deposit", async (req, res) => {
   try {
     const { userId, address } = req.body;
     if (!userId || !address) {
-      // إذا تم استدعاؤه بدون معاملات، ينفذ الفحص الشامل
       await checkDeposits();
       return res.json({ success: true, message: "Global deposit check triggered" });
     }
@@ -185,12 +178,10 @@ app.post("/api/check-deposit", async (req, res) => {
           if (!txDoc.exists) {
             const amountReceived = parseFloat(tx.value) / 1e6;
 
-            // إضافة الرصيد للمستخدم في Firestore
             await db.collection("users").doc(userId).update({
               balance: admin.firestore.FieldValue.increment(amountReceived)
             });
 
-            // تسجيل العملية لمنع التكرار
             await db.collection("processed_txs").doc(tx.transaction_id).set({
               userId: userId,
               amount: amountReceived,
@@ -199,7 +190,6 @@ app.post("/api/check-deposit", async (req, res) => {
 
             console.log(`✅ Instant Auto-Deposit: Credited ${amountReceived} USDT to user ${userId}`);
 
-            // جلب المفتاح الخاص للمحفظة الفرعية وتنفيذ الـ Sweep
             const userDoc = await db.collection("users").doc(userId).get();
             const userData = userDoc.data();
             if (userData && userData.depositPrivateKey) {
@@ -223,7 +213,6 @@ app.post("/api/check-deposit", async (req, res) => {
   }
 });
 
-// 5. مسار السحب التلقائي
 app.post("/api/withdraw-auto", async (req, res) => {
   try {
     const { toAddress, amount } = req.body;
@@ -246,7 +235,6 @@ app.post("/api/withdraw-auto", async (req, res) => {
   }
 });
 
-// 6. مراقبة الإيداعات التلقائية الشاملة (Auto-Sweep Cron Job)
 async function checkDeposits() {
   console.log("⏰ [Cron] Starting scheduled deposit check across all user wallets...");
   try {
@@ -299,12 +287,10 @@ async function checkDeposits() {
   }
 }
 
-// تشغيل فحص دوري كل 3 دقائق
 setInterval(checkDeposits, 180000);
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Oscar Backend running on port ${PORT} (0.0.0.0)`);
-  // إطلاق فحص أولي فور تشغيل السيرفر لتجميع أي مبالغ معلقة مباشرة
   checkDeposits();
 });
