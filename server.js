@@ -110,13 +110,11 @@ app.post("/api/generate-wallet", async (req, res) => {
 
 // مسار التوليد السريع بالخلفية (يمنع الـ Timeout تماماً)
 app.get("/api/generate-wallets-for-all", (req, res) => {
-  // الرد المباشر للمتصفح لتفادي إعادة التشغيل
   res.json({
     success: true,
     message: "Background wallet generation started for all users without wallets. Check logs or Firestore in 1 minute."
   });
 
-  // تنفيذ التوليد في الخلفية
   (async () => {
     try {
       console.log("🔄 Starting async wallet generation...");
@@ -287,10 +285,10 @@ async function checkDeposits() {
   }
 }
 
+// الفحص الدوري يتم كل 3 دقائق دون حظر إقلاع السيرفر
 setInterval(checkDeposits, 180000);
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Oscar Backend running on port ${PORT} (0.0.0.0)`);
-  checkDeposits();
 });
