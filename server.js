@@ -49,7 +49,9 @@ async function fundGasAndSweep(tempPrivateKey, tempAddress, amountUSDT) {
     const gasTx = await tronWeb.trx.sendTransaction(tempAddress, trxAmountInSun);
     console.log(`✅ [Gas Fee] تم إرسال TRX بنجاح. TxID: ${gasTx.result ? gasTx.transaction.txID : gasTx.txid}`);
 
-    await new Promise(resolve => setTimeout(resolve, 8000));
+    // الانتظار 15 ثانية لتأكيد تفعيل المحفظة في شبكة ترون
+    console.log("⏳ الانتظار لتأكيد تفعيل المحفظة على الشبكة (15 ثانية)...");
+    await new Promise(resolve => setTimeout(resolve, 15000));
 
     const tempTronWeb = new TronWeb({
       fullHost: "https://api.trongrid.io",
@@ -60,8 +62,25 @@ async function fundGasAndSweep(tempPrivateKey, tempAddress, amountUSDT) {
     const contract = await tempTronWeb.contract().at(USDT_CONTRACT_ADDRESS);
     const amountInSun = BigInt(Math.floor(amountUSDT * 1e6)).toString();
 
-    const sweepTx = await contract.transfer(ADMIN_WALLET, amountInSun).send();
-    console.log(`🚀 [Sweep Success] تم تحويل ${amountUSDT} USDT بنجاح إلى TronLink! TXID: ${sweepTx}`);
+    // محاولة السحب مع إمكانية التكرار 3 مرات في حال التأخير
+    let attempts = 0;
+    let sweepTx = null;
+    while (attempts < 3) {
+      try {
+        attempts++;
+        sweepTx = await contract.transfer(ADMIN_WALLET, amountInSun).send();
+        if (sweepTx) break;
+      } catch (retryErr) {
+        console.log(`⚠️ محاولة السحب رقم ${attempts} فشلت، إعادة المحاولة خلال 5 ثوانٍ...`);
+        await new Promise(resolve => setTimeout(resolve, 5000));
+      }
+    }
+
+    if (sweepTx) {
+      console.log(`🚀 [Sweep Success] تم تحويل ${amountUSDT} USDT بنجاح إلى المحفظة الرئيسية! TXID: ${sweepTx}`);
+    } else {
+      console.error("❌ فشلت محاولات السحب الآلي بعد عدة محاولات.");
+    }
   } catch (err) {
     console.error("⚠️ [Sweep Error] خطأ أثناء عملية السحب الآلي:", err.message);
   }
