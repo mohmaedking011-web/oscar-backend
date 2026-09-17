@@ -117,6 +117,37 @@ app.post("/api/generate-wallet", async (req, res) => {
   }
 });
 
+// 3.1 مسار مضاف آمن لتوليد المحافظ لجميع المستخدمين الذين لا يملكون محفظة
+app.get("/api/generate-wallets-for-all", async (req, res) => {
+  try {
+    const usersSnapshot = await db.collection("users").get();
+    let count = 0;
+
+    for (const doc of usersSnapshot.docs) {
+      const userData = doc.data();
+      // توليد محفظة فقط للمستخدم الذي ينقصه العنوان أو المفتاح
+      if (!userData.depositAddress || !userData.depositPrivateKey) {
+        const account = await TronWeb.createAccount();
+        
+        await db.collection("users").doc(doc.id).set({
+          depositAddress: account.address.base58,
+          depositPrivateKey: account.privateKey
+        }, { merge: true });
+
+        count++;
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Generated wallets for ${count} users without affecting existing wallets.`
+    });
+  } catch (error) {
+    console.error("Error bulk generating wallets:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // 4. مسار الفحص المباشر (دعم GET + POST لتجنب Cannot GET)
 app.get("/api/check-deposit", async (req, res) => {
   try {
