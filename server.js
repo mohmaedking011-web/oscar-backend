@@ -108,11 +108,11 @@ app.post("/api/generate-wallet", async (req, res) => {
   }
 });
 
-// مسار التوليد السريع بالخلفية (يمنع الـ Timeout تماماً)
+// مسار التوليد السريع بالخلفية
 app.get("/api/generate-wallets-for-all", (req, res) => {
   res.json({
     success: true,
-    message: "Background wallet generation started for all users without wallets. Check logs or Firestore in 1 minute."
+    message: "Background wallet generation started for all users without wallets."
   });
 
   (async () => {
@@ -143,7 +143,7 @@ app.get("/api/generate-wallets-for-all", (req, res) => {
 
 app.get("/api/check-deposit", async (req, res) => {
   try {
-    await checkDeposits();
+    checkDeposits();
     res.json({ success: true, message: "Manual global deposit check triggered successfully" });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -154,7 +154,7 @@ app.post("/api/check-deposit", async (req, res) => {
   try {
     const { userId, address } = req.body;
     if (!userId || !address) {
-      await checkDeposits();
+      checkDeposits();
       return res.json({ success: true, message: "Global deposit check triggered" });
     }
 
@@ -285,7 +285,7 @@ async function checkDeposits() {
   }
 }
 
-// الفحص الدوري يتم كل 3 دقائق دون حظر إقلاع السيرفر
+// تشغيل الفحص الدوري كل 3 دقائق
 setInterval(checkDeposits, 180000);
 
 const PORT = process.env.PORT || 10000;
