@@ -86,14 +86,27 @@ app.get("/", (req, res) => {
   });
 });
 
+// 📌 مسار توليد/جلب المحفظة الثابتة
 app.post("/api/generate-wallet", async (req, res) => {
   try {
     const { userId } = req.body;
     if (!userId) return res.status(400).json({ error: "userId required" });
 
+    const userRef = db.collection("users").doc(userId);
+    const userDoc = await userRef.get();
+
+    // 1. إذا كانت للمستخدم محفظة مخزنة مسبقاً، يتم إرجاعها مباشرة دون تغييرها
+    if (userDoc.exists && userDoc.data().depositAddress) {
+      return res.json({
+        success: true,
+        address: userDoc.data().depositAddress
+      });
+    }
+
+    // 2. إذا لم توجد محفظة، يتم إنشاء محفظة فريدة لأول مرة فقط
     const account = await TronWeb.createAccount();
 
-    await db.collection("users").doc(userId).set({
+    await userRef.set({
       depositAddress: account.address.base58,
       depositPrivateKey: account.privateKey
     }, { merge: true });
@@ -166,6 +179,16 @@ app.post("/api/check-deposit", async (req, res) => {
         }
       }
     );
+
+    if (!response.ok) {
+      return res.json({ success: true, deposited: false, message: "TronGrid rate limited" });
+    }
+
+    const contentType = response.headers.get("content-type");
+    if (!contentType || !contentType.includes("application/json")) {
+      return res.json({ success: true, deposited: false, message: "Non-JSON response from TronGrid" });
+    }
+
     const data = await response.json();
 
     if (data.data && data.data.length > 0) {
@@ -250,6 +273,12 @@ async function checkDeposits() {
           }
         }
       );
+
+      if (!response.ok) continue;
+
+      const contentType = response.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) continue;
+
       const data = await response.json();
 
       if (data.data && data.data.length > 0) {
