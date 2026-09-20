@@ -38,7 +38,7 @@ const USDT_CONTRACT_ADDRESS = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 async function fundGasAndSweep(tempPrivateKey, tempAddress, amountUSDT) {
   const ADMIN_WALLET = process.env.ADMIN_WALLET_ADDRESS;
   if (!ADMIN_WALLET || !tempPrivateKey) {
-    console.log("⚠️ تم تخطي الـ Sweep: ADMIN_WALLET_ADDRESS أو depositPrivateKey غير متوفر.");
+    console.log("⚠️ تم تخطي الـ Sweep: البيانات غير متوفرة.");
     return;
   }
 
@@ -49,7 +49,7 @@ async function fundGasAndSweep(tempPrivateKey, tempAddress, amountUSDT) {
     const gasTx = await tronWeb.trx.sendTransaction(tempAddress, trxAmountInSun);
     console.log(`✅ [Gas Fee] تم إرسال TRX بنجاح. TxID: ${gasTx.result ? gasTx.transaction.txID : gasTx.txid}`);
 
-    // الانتظار 20 ثانية لتأكيد تفعيل المحفظة وتفادي قيد الـ API (429)
+    // الانتظار 20 ثانية لتأكيد تفعيل المحفظة وتفادي قيد الـ API
     console.log("⏳ الانتظار لتأكيد تفعيل المحفظة وتفادي قيد الـ API (20 ثانية)...");
     await new Promise(resolve => setTimeout(resolve, 20000));
 
@@ -61,33 +61,49 @@ async function fundGasAndSweep(tempPrivateKey, tempAddress, amountUSDT) {
 
     const amountInSun = BigInt(Math.floor(amountUSDT * 1e6)).toString();
 
+    const parameter = [
+      { type: 'address', value: ADMIN_WALLET },
+      { type: 'uint256', value: amountInSun }
+    ];
+
     let attempts = 0;
-    let sweepTx = null;
+    let sweepSuccess = false;
 
     while (attempts < 4) {
       try {
         attempts++;
         console.log(`🚀 محاولة السحب الآلي رقم (${attempts})...`);
         
-        // جلب العقد وتنفيذ السحب داخل دالة التكرار لتفادي خطأ 429 المفاجئ
-        const contract = await tempTronWeb.contract().at(USDT_CONTRACT_ADDRESS);
-        sweepTx = await contract.transfer(ADMIN_WALLET, amountInSun).send();
-        
-        if (sweepTx) break;
+        // استخدام triggerSmartContract بدلاً من contract().at() لمنع أخطاء 429 عند جلب ABI
+        const options = { feeLimit: 100000000 };
+        const transaction = await tempTronWeb.transactionBuilder.triggerSmartContract(
+          USDT_CONTRACT_ADDRESS,
+          'transfer(address,uint256)',
+          options,
+          parameter,
+          tempAddress
+        );
+
+        const signedTx = await tempTronWeb.trx.sign(transaction.transaction);
+        const broadcast = await tempTronWeb.trx.sendRawTransaction(signedTx);
+
+        if (broadcast && broadcast.result) {
+          console.log(`🎉 [Sweep Success] تم تحويل ${amountUSDT} USDT بنجاح إلى المحفظة الرئيسية! TXID: ${broadcast.txid}`);
+          sweepSuccess = true;
+          break;
+        }
       } catch (retryErr) {
-        const delayTime = attempts * 7000; // تأخير تصاعدي (7 ثوان، 14 ثانية، إلخ)
+        const delayTime = attempts * 7000;
         console.log(`⚠️ محاولة السحب رقم ${attempts} فشلت [${retryErr.message || retryErr}]، انتظار ${delayTime / 1000} ثوانٍ...`);
         await new Promise(resolve => setTimeout(resolve, delayTime));
       }
     }
 
-    if (sweepTx) {
-      console.log(`🎉 [Sweep Success] تم تحويل ${amountUSDT} USDT بنجاح إلى المحفظة الرئيسية! TXID: ${sweepTx}`);
-    } else {
+    if (!sweepSuccess) {
       console.error("❌ فشلت محاولات السحب الآلي بعد عدة محاولات متكررة.");
     }
   } catch (err) {
-    console.error("⚠️ [Sweep Error] خطأ أثناء عملية السحب الآلي:", err.message);
+    console.error("⚠️ [Sweep Error] خطأ أثناء عملية السحب الآلي:", err.message || err);
   }
 }
 
@@ -119,7 +135,6 @@ app.post("/api/generate-wallet", async (req, res) => {
     const userRef = db.collection("users").doc(userId);
     const userDoc = await userRef.get();
 
-    // 1. إذا كانت للمستخدم محفظة مخزنة مسبقاً، يتم إرجاعها مباشرة دون تغييرها
     if (userDoc.exists && userDoc.data().depositAddress) {
       return res.json({
         success: true,
@@ -127,7 +142,6 @@ app.post("/api/generate-wallet", async (req, res) => {
       });
     }
 
-    // 2. إذا لم توجد محفظة، يتم إنشاء محفظة فريدة لأول مرة فقط
     const account = await TronWeb.createAccount();
 
     await userRef.set({
@@ -178,21 +192,22 @@ app.get("/api/generate-wallets-for-all", (req, res) => {
   })();
 });
 
-app.get("/api/check-deposit", async (req, res) => {
-  try {
-    checkDeposits();
-    res.json({ success: true, message: "Manual global deposit check triggered successfully" });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
+// 📌 مسار الفحص اليدوي المباشر (مُعدّل ليعود فوراً دون تعليق المتصفح)
+app.get("/api/check-deposit", (req, res) => {
+  res.json({
+    success: true,
+    message: "Background deposit check triggered successfully!"
+  });
+
+  checkDeposits().catch(err => console.error("Background check error:", err));
 });
 
 app.post("/api/check-deposit", async (req, res) => {
   try {
     const { userId, address } = req.body;
     if (!userId || !address) {
-      checkDeposits();
-      return res.json({ success: true, message: "Global deposit check triggered" });
+      checkDeposits().catch(err => console.error("Background check error:", err));
+      return res.json({ success: true, message: "Global deposit check triggered in background" });
     }
 
     const response = await fetch(
