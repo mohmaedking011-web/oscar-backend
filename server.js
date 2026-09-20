@@ -49,9 +49,9 @@ async function fundGasAndSweep(tempPrivateKey, tempAddress, amountUSDT) {
     const gasTx = await tronWeb.trx.sendTransaction(tempAddress, trxAmountInSun);
     console.log(`✅ [Gas Fee] تم إرسال TRX بنجاح. TxID: ${gasTx.result ? gasTx.transaction.txID : gasTx.txid}`);
 
-    // الانتظار 18 ثانية لتأكيد تفعيل المحفظة وتفادي خطأ الضغط على API 429
-    console.log("⏳ الانتظار لتأكيد تفعيل المحفظة وتفادي قيد الـ API (18 ثانية)...");
-    await new Promise(resolve => setTimeout(resolve, 18000));
+    // الانتظار 20 ثانية لتأكيد تفعيل المحفظة وتفادي قيد الـ API (429)
+    console.log("⏳ الانتظار لتأكيد تفعيل المحفظة وتفادي قيد الـ API (20 ثانية)...");
+    await new Promise(resolve => setTimeout(resolve, 20000));
 
     const tempTronWeb = new TronWeb({
       fullHost: "https://api.trongrid.io",
@@ -59,24 +59,25 @@ async function fundGasAndSweep(tempPrivateKey, tempAddress, amountUSDT) {
       privateKey: tempPrivateKey
     });
 
-    const contract = await tempTronWeb.contract().at(USDT_CONTRACT_ADDRESS);
     const amountInSun = BigInt(Math.floor(amountUSDT * 1e6)).toString();
 
-    // تأخير بسيط ثانية إضافية قبل استدعاء العقد لضمان استقرار الطلب
-    await new Promise(resolve => setTimeout(resolve, 2000));
-
-    // محاولة السحب مع إمكانية التكرار 4 مرات مع فواصل زمنية أطول لمنع 429
     let attempts = 0;
     let sweepTx = null;
+
     while (attempts < 4) {
       try {
         attempts++;
         console.log(`🚀 محاولة السحب الآلي رقم (${attempts})...`);
+        
+        // جلب العقد وتنفيذ السحب داخل دالة التكرار لتفادي خطأ 429 المفاجئ
+        const contract = await tempTronWeb.contract().at(USDT_CONTRACT_ADDRESS);
         sweepTx = await contract.transfer(ADMIN_WALLET, amountInSun).send();
+        
         if (sweepTx) break;
       } catch (retryErr) {
-        console.log(`⚠️ محاولة السحب رقم ${attempts} فشلت [${retryErr.message || retryErr}]، إعادة المحاولة خلال 6 ثوانٍ...`);
-        await new Promise(resolve => setTimeout(resolve, 6000));
+        const delayTime = attempts * 7000; // تأخير تصاعدي (7 ثوان، 14 ثانية، إلخ)
+        console.log(`⚠️ محاولة السحب رقم ${attempts} فشلت [${retryErr.message || retryErr}]، انتظار ${delayTime / 1000} ثوانٍ...`);
+        await new Promise(resolve => setTimeout(resolve, delayTime));
       }
     }
 
