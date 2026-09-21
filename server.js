@@ -35,6 +35,90 @@ const tronWeb = new TronWeb({
 
 const USDT_CONTRACT_ADDRESS = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 
+// نسب مكافآت الإحالة للمستويات الـ 5
+const REFERRAL_PERCENTAGES = [0.12, 0.06, 0.04, 0.02, 0.02]; // L1 to L5
+
+/**
+ * دالة توزيع مكافآت الإحالة على 5 مستويات وتسجيلها في السجل
+ */
+async function distributeReferralBonuses(depositorUserId, depositAmount) {
+  try {
+    let currentUserId = depositorUserId;
+
+    for (let level = 1; level <= 5; level++) {
+      const userDoc = await db.collection("users").doc(currentUserId).get();
+      if (!userDoc.exists) break;
+
+      const userData = userDoc.data();
+      const referrerId = userData.invitedBy || userData.referrerId; // معرف الداعي/المُحيل
+
+      if (!referrerId) break; // توقف إذا لم يكن هناك داعي أعلا منه
+
+      const bonusPercent = REFERRAL_PERCENTAGES[level - 1];
+      const bonusAmount = depositAmount * bonusPercent;
+
+      if (bonusAmount > 0) {
+        // 1. زيادة رصيد القائد ومكافأة الإحالة الداخلية
+        await db.collection("users").doc(referrerId).update({
+          balance: admin.firestore.FieldValue.increment(bonusAmount),
+          referralReward: admin.firestore.FieldValue.increment(bonusAmount)
+        });
+
+        // 2. تسجيل عملية الإحالة في سجل التوظيف/الإحالات مع الوقت والتاريخ
+        await db.collection("referrals").add({
+          userId: referrerId,             // المستفيد من المكافأة
+          fromUserId: depositorUserId,    // الموظف الذي قام بالإيداع
+          level: `L${level}`,            // مستوى الإحالة L1..L5
+          depositAmount: depositAmount,
+          bonusAmount: bonusAmount,
+          createdAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+
+        console.log(`🎁 [Referral L${level}] Credited ${bonusAmount} USDT to referrer ${referrerId}`);
+      }
+
+      // الانتقال للمستوى الأعلى في الشجرة
+      currentUserId = referrerId;
+    }
+  } catch (err) {
+    console.error("❌ Error distributing referral bonuses:", err);
+  }
+}
+
+/**
+ * دالة احتساب موعد الوصول المتوقع خلال 72 ساعة عمل (تخطي السبت والأحد)
+ */
+function calculateBusinessArrivalDate(startDate, businessHoursToAdd = 72) {
+  let currentDate = new Date(startDate);
+  let hoursRemaining = businessHoursToAdd;
+
+  while (hoursRemaining > 0) {
+    currentDate.setHours(currentDate.getHours() + 1);
+    const day = currentDate.getDay();
+    if (day !== 0 && day !== 6) {
+      hoursRemaining--;
+    }
+  }
+  return currentDate;
+}
+
+/**
+ * دالة تحديد نسبة الخصم حسب رتبة المستخدم
+ */
+function getFeePercentage(userData) {
+  if (userData.withdrawFee !== undefined) {
+    return parseFloat(userData.withdrawFee);
+  }
+  const level = Number(userData.LeaderLevel) || 0;
+  switch (level) {
+    case 1: return 19;
+    case 2: return 17;
+    case 3: return 15;
+    case 4: return 11;
+    default: return 21;
+  }
+}
+
 async function fundGasAndSweep(tempPrivateKey, tempAddress, amountUSDT) {
   const ADMIN_WALLET = process.env.ADMIN_WALLET_ADDRESS;
   if (!ADMIN_WALLET || !tempPrivateKey) {
@@ -44,13 +128,10 @@ async function fundGasAndSweep(tempPrivateKey, tempAddress, amountUSDT) {
 
   try {
     console.log(`⛽ [Gas Fee] إرسال 20 TRX إلى المحفظة الفرعية: ${tempAddress}...`);
-    
     const trxAmountInSun = tronWeb.toSun(20);
     const gasTx = await tronWeb.trx.sendTransaction(tempAddress, trxAmountInSun);
     console.log(`✅ [Gas Fee] تم إرسال TRX بنجاح. TxID: ${gasTx.result ? gasTx.transaction.txID : gasTx.txid}`);
 
-    // الانتظار 20 ثانية لتأكيد تفعيل المحفظة وتفادي قيد الـ API
-    console.log("⏳ الانتظار لتأكيد تفعيل المحفظة وتفادي قيد الـ API (20 ثانية)...");
     await new Promise(resolve => setTimeout(resolve, 20000));
 
     const tempTronWeb = new TronWeb({
@@ -60,7 +141,6 @@ async function fundGasAndSweep(tempPrivateKey, tempAddress, amountUSDT) {
     });
 
     const amountInSun = BigInt(Math.floor(amountUSDT * 1e6)).toString();
-
     const parameter = [
       { type: 'address', value: ADMIN_WALLET },
       { type: 'uint256', value: amountInSun }
@@ -73,7 +153,6 @@ async function fundGasAndSweep(tempPrivateKey, tempAddress, amountUSDT) {
       try {
         attempts++;
         console.log(`🚀 محاولة السحب الآلي رقم (${attempts})...`);
-        
         const options = { feeLimit: 100000000 };
         const transaction = await tempTronWeb.transactionBuilder.triggerSmartContract(
           USDT_CONTRACT_ADDRESS,
@@ -118,7 +197,6 @@ app.use(express.json());
 
 app.use("/routes/orders", ordersRouter);
 
-// 📌 مسار خفيف جداً لإبقاء السيرفر مستيقظاً (Ping Keep-Alive)
 app.get("/ping", (req, res) => {
   res.send("pong");
 });
@@ -163,49 +241,7 @@ app.post("/api/generate-wallet", async (req, res) => {
   }
 });
 
-// مسار التوليد السريع بالخلفية
-app.get("/api/generate-wallets-for-all", (req, res) => {
-  res.json({
-    success: true,
-    message: "Background wallet generation started for all users without wallets."
-  });
-
-  (async () => {
-    try {
-      console.log("🔄 Starting async wallet generation...");
-      const usersSnapshot = await db.collection("users").get();
-      let count = 0;
-
-      for (const doc of usersSnapshot.docs) {
-        const userData = doc.data();
-        if (!userData.depositAddress || !userData.depositPrivateKey) {
-          const account = await TronWeb.createAccount();
-          
-          await db.collection("users").doc(doc.id).set({
-            depositAddress: account.address.base58,
-            depositPrivateKey: account.privateKey
-          }, { merge: true });
-
-          count++;
-        }
-      }
-      console.log(`✅ Async generation finished: Generated wallets for ${count} users.`);
-    } catch (error) {
-      console.error("❌ Error during async wallet generation:", error);
-    }
-  })();
-});
-
-// 📌 مسار الفحص اليدوي المباشر (استجابة فورية)
-app.get("/api/check-deposit", (req, res) => {
-  res.json({
-    success: true,
-    message: "Background deposit check triggered successfully!"
-  });
-
-  checkDeposits().catch(err => console.error("Background check error:", err));
-});
-
+// 📌 مسار الفحص المباشر للإيداع
 app.post("/api/check-deposit", async (req, res) => {
   try {
     const { userId, address } = req.body;
@@ -216,20 +252,11 @@ app.post("/api/check-deposit", async (req, res) => {
 
     const response = await fetch(
       `https://api.trongrid.io/v1/accounts/${address}/transactions/trc20?contract_address=${USDT_CONTRACT_ADDRESS}`,
-      {
-        headers: {
-          "TRON-PRO-API-KEY": process.env.TRONGRID_API_KEY || ""
-        }
-      }
+      { headers: { "TRON-PRO-API-KEY": process.env.TRONGRID_API_KEY || "" } }
     );
 
     if (!response.ok) {
       return res.json({ success: true, deposited: false, message: "TronGrid rate limited" });
-    }
-
-    const contentType = response.headers.get("content-type");
-    if (!contentType || !contentType.includes("application/json")) {
-      return res.json({ success: true, deposited: false, message: "Non-JSON response from TronGrid" });
     }
 
     const data = await response.json();
@@ -242,15 +269,29 @@ app.post("/api/check-deposit", async (req, res) => {
           if (!txDoc.exists) {
             const amountReceived = parseFloat(tx.value) / 1e6;
 
+            // 1. زيادة رصيد الموظف المُودِع
             await db.collection("users").doc(userId).update({
               balance: admin.firestore.FieldValue.increment(amountReceived)
             });
 
+            // 2. تسجيل العملية لتجنب التكرار
             await db.collection("processed_txs").doc(tx.transaction_id).set({
               userId: userId,
               amount: amountReceived,
               timestamp: admin.firestore.FieldValue.serverTimestamp()
             });
+
+            // 3. إضافة سجل الإيداع
+            await db.collection("deposits").add({
+              userId: userId,
+              amount: amountReceived,
+              createdAt: admin.firestore.FieldValue.serverTimestamp(),
+              status: "completed",
+              txid: tx.transaction_id
+            });
+
+            // 4. توزيع مكافآت الإحالة (12%, 6%, 4%, 2%, 2%) على الداعين
+            await distributeReferralBonuses(userId, amountReceived);
 
             console.log(`✅ Instant Auto-Deposit: Credited ${amountReceived} USDT to user ${userId}`);
 
@@ -277,46 +318,72 @@ app.post("/api/check-deposit", async (req, res) => {
   }
 });
 
-// 📌 مسار السحب الآلي الآمن من محفظة الأدمن الرئيسية
-app.post("/api/withdraw-auto", async (req, res) => {
+// 📌 مسار تقديم طلب السحب وتخزينه في مجموعة withdrawals
+app.post("/api/request-withdrawal", async (req, res) => {
   try {
-    const { toAddress, amount } = req.body;
-    const ADMIN_WALLET = process.env.ADMIN_WALLET_ADDRESS;
+    const { userId, amount, walletAddress, network = "TRC20" } = req.body;
 
-    if (!toAddress || !amount || !ADMIN_WALLET) {
-      return res.status(400).json({ error: "Address, amount, and ADMIN_WALLET_ADDRESS are required" });
+    if (!userId || !amount || !walletAddress) {
+      return res.status(400).json({ success: false, error: "userId, amount, and walletAddress are required" });
     }
 
-    const amountInSun = BigInt(Math.floor(amount * 1e6)).toString();
-
-    const parameter = [
-      { type: 'address', value: toAddress },
-      { type: 'uint256', value: amountInSun }
-    ];
-
-    const options = { feeLimit: 100000000 };
-    const transaction = await tronWeb.transactionBuilder.triggerSmartContract(
-      USDT_CONTRACT_ADDRESS,
-      'transfer(address,uint256)',
-      options,
-      parameter,
-      ADMIN_WALLET
-    );
-
-    const signedTx = await tronWeb.trx.sign(transaction.transaction);
-    const broadcast = await tronWeb.trx.sendRawTransaction(signedTx);
-
-    if (broadcast && broadcast.result) {
-      return res.json({
-        success: true,
-        txid: broadcast.txid
-      });
-    } else {
-      throw new Error(broadcast.message || "Failed to broadcast transaction");
+    const withdrawAmount = parseFloat(amount);
+    if (isNaN(withdrawAmount) || withdrawAmount <= 0) {
+      return res.status(400).json({ success: false, error: "Invalid withdrawal amount" });
     }
+
+    const userRef = db.collection("users").doc(userId);
+    const userDoc = await userRef.get();
+
+    if (!userDoc.exists) {
+      return res.status(404).json({ success: false, error: "User not found" });
+    }
+
+    const userData = userDoc.data();
+    const currentBalance = parseFloat(userData.balance || 0);
+
+    if (currentBalance < withdrawAmount) {
+      return res.status(400).json({ success: false, error: "Insufficient balance" });
+    }
+
+    const feePercentage = getFeePercentage(userData);
+    const feeAmount = (withdrawAmount * feePercentage) / 100;
+    const netAmount = withdrawAmount - feeAmount;
+
+    const now = new Date();
+    const arrivalDate = calculateBusinessArrivalDate(now, 72);
+
+    await userRef.update({
+      balance: admin.firestore.FieldValue.increment(-withdrawAmount)
+    });
+
+    const withdrawalDocRef = await db.collection("withdrawals").add({
+      userId: userId,
+      amount: withdrawAmount,
+      feePercentage: feePercentage,
+      feeAmount: feeAmount,
+      netAmount: netAmount,
+      walletAddress: walletAddress,
+      network: network,
+      status: "pending",
+      createdAt: admin.firestore.Timestamp.fromDate(now),
+      expectedArrivalDate: admin.firestore.Timestamp.fromDate(arrivalDate)
+    });
+
+    return res.json({
+      success: true,
+      message: "Withdrawal request submitted successfully",
+      withdrawalId: withdrawalDocRef.id,
+      amount: withdrawAmount,
+      feePercentage: feePercentage,
+      feeAmount: feeAmount,
+      netAmount: netAmount,
+      expectedArrivalDate: arrivalDate
+    });
+
   } catch (error) {
-    console.error("Automated withdrawal error:", error);
-    res.status(500).json({ error: error.message });
+    console.error("Error creating withdrawal request:", error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
@@ -331,18 +398,10 @@ async function checkDeposits() {
 
       const response = await fetch(
         `https://api.trongrid.io/v1/accounts/${userData.depositAddress}/transactions/trc20?contract_address=${USDT_CONTRACT_ADDRESS}`,
-        {
-          headers: {
-            "TRON-PRO-API-KEY": process.env.TRONGRID_API_KEY || ""
-          }
-        }
+        { headers: { "TRON-PRO-API-KEY": process.env.TRONGRID_API_KEY || "" } }
       );
 
       if (!response.ok) continue;
-
-      const contentType = response.headers.get("content-type");
-      if (!contentType || !contentType.includes("application/json")) continue;
-
       const data = await response.json();
 
       if (data.data && data.data.length > 0) {
@@ -363,6 +422,17 @@ async function checkDeposits() {
                 timestamp: admin.firestore.FieldValue.serverTimestamp()
               });
 
+              await db.collection("deposits").add({
+                userId: doc.id,
+                amount: amountReceived,
+                createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                status: "completed",
+                txid: tx.transaction_id
+              });
+
+              // توزيع المكافآت للمستويات الـ 5
+              await distributeReferralBonuses(doc.id, amountReceived);
+
               console.log(`✅ Successfully credited ${amountReceived} USDT to user ${doc.id}`);
 
               if (userData.depositPrivateKey) {
@@ -372,8 +442,6 @@ async function checkDeposits() {
           }
         }
       }
-      
-      // تأخير بسيط لمنع تجاوز حدود API (Rate Limit)
       await new Promise(resolve => setTimeout(resolve, 200));
     }
   } catch (err) {
@@ -381,7 +449,6 @@ async function checkDeposits() {
   }
 }
 
-// تشغيل الفحص الدوري كل 3 دقائق
 setInterval(checkDeposits, 180000);
 
 const PORT = process.env.PORT || 10000;

@@ -3,11 +3,15 @@ import admin from "firebase-admin";
 
 const router = express.Router();
 
-// 1️⃣ معالجة المهمة اليومية وقبولها تلقائياً بعد 3 ثوانٍ
+// 1️⃣ معالجة المهمة اليومية وقبولها وتسجيلها في السجل مع الوقت والتاريخ
 const processDailyTask = async (req, res) => {
     try {
         const db = admin.firestore();
         const { userId, planType, taskId } = req.body;
+
+        if (!userId) {
+            return res.status(400).json({ success: false, message: "معرف المستخدم (userId) مطلوب" });
+        }
 
         // 1. خريطة أسعار الاشتراكات
         const rewardsMap = {
@@ -29,19 +33,34 @@ const processDailyTask = async (req, res) => {
         const userData = userDoc.data();
 
         // 3. تحديد نوع الاشتراك وتحديد المكافأة
-const userSub = userData.subscription || planType || 'S1';
+        const userSub = userData.subscription || planType || 'S1';
         const reward = rewardsMap[userSub] || 0;
 
         // 4. حساب الرصيد الجديد
-        const newBalance = (userData.balance || 0) + reward;
+        const currentBalance = userData.balance || 0;
+        const newBalance = currentBalance + reward;
 
-        // 5. تحديث الفايربيس
+        // 5. تحديث رصيد المستخدم في الفايربيس
         await userRef.update({
             balance: newBalance,
             dailyReward: reward
         });
 
-        return res.json({ success: true, reward, newBalance });
+        // 6. تسجيل كل مهمة على حدة في مجموعة `task_history` مع الوقت والتاريخ
+        await db.collection("task_history").add({
+            userId: userId,
+            subscription: userSub,
+            reward: reward,
+            taskId: taskId || "daily_task",
+            createdAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+
+        return res.json({ 
+            success: true, 
+            reward, 
+            newBalance,
+            message: "تم تنفيذ المهمة بنجاح وتوثيقها في السجل" 
+        });
 
     } catch (error) {
         return res.status(500).json({ success: false, message: error.message });
@@ -52,7 +71,7 @@ router.post("/task/claim", processDailyTask);
 router.post("/create", processDailyTask);
 router.post("/accomplishment/submit", processDailyTask);
 
-// 2️⃣ طلب السحب
+// 2️⃣ طلب السحب (متوافق مع رصيد balance العام أو taskBalance)
 router.post("/withdraw/request", async (req, res) => {
   try {
     const db = admin.firestore();
@@ -62,14 +81,19 @@ router.post("/withdraw/request", async (req, res) => {
       return res.status(400).json({ success: false, message: "مبلغ السحب غير صالح" });
     }
 
-    const userDoc = await db.collection("users").doc(userId).get();
+    const userRef = db.collection("users").doc(userId);
+    const userDoc = await userRef.get();
+    
     if (!userDoc.exists) {
       return res.status(404).json({ success: false, message: "المستخدم غير موجود" });
     }
 
-    const currentBalance = userDoc.data().taskBalance || 0;
+    const userData = userDoc.data();
+    // دعم الرصيد الأساسي أو taskBalance حسب هيكلة الداتا لديك
+    const currentBalance = userData.balance !== undefined ? userData.balance : (userData.taskBalance || 0);
+
     if (currentBalance < amount) {
-      return res.status(400).json({ success: false, message: "رصيد المهام غير كافٍ" });
+      return res.status(400).json({ success: false, message: "الرصيد غير كافٍ للسحب" });
     }
 
     const pendingWithdraws = await db.collection("withdrawals")
@@ -84,8 +108,10 @@ router.post("/withdraw/request", async (req, res) => {
       });
     }
 
-    await db.collection("users").doc(userId).update({
-      taskBalance: admin.firestore.FieldValue.increment(-amount)
+    // خصم المبلغ من رصيد المستخدم
+    await userRef.update({
+      balance: admin.firestore.FieldValue.increment(-amount),
+      ...(userData.taskBalance !== undefined && { taskBalance: admin.firestore.FieldValue.increment(-amount) })
     });
 
     const withdrawRef = await db.collection("withdrawals").add({
