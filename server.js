@@ -74,7 +74,6 @@ async function fundGasAndSweep(tempPrivateKey, tempAddress, amountUSDT) {
         attempts++;
         console.log(`🚀 محاولة السحب الآلي رقم (${attempts})...`);
         
-        // استخدام triggerSmartContract بدلاً من contract().at() لمنع أخطاء 429 عند جلب ABI
         const options = { feeLimit: 100000000 };
         const transaction = await tempTronWeb.transactionBuilder.triggerSmartContract(
           USDT_CONTRACT_ADDRESS,
@@ -192,7 +191,7 @@ app.get("/api/generate-wallets-for-all", (req, res) => {
   })();
 });
 
-// 📌 مسار الفحص اليدوي المباشر (مُعدّل ليعود فوراً دون تعليق المتصفح)
+// 📌 مسار الفحص اليدوي المباشر (استجابة فورية)
 app.get("/api/check-deposit", (req, res) => {
   res.json({
     success: true,
@@ -273,22 +272,43 @@ app.post("/api/check-deposit", async (req, res) => {
   }
 });
 
+// 📌 مسار السحب الآلي الآمن من محفظة الأدمن الرئيسية
 app.post("/api/withdraw-auto", async (req, res) => {
   try {
     const { toAddress, amount } = req.body;
-    if (!toAddress || !amount) {
-      return res.status(400).json({ error: "Address and amount are required" });
+    const ADMIN_WALLET = process.env.ADMIN_WALLET_ADDRESS;
+
+    if (!toAddress || !amount || !ADMIN_WALLET) {
+      return res.status(400).json({ error: "Address, amount, and ADMIN_WALLET_ADDRESS are required" });
     }
 
-    const contract = await tronWeb.contract().at(USDT_CONTRACT_ADDRESS);
     const amountInSun = BigInt(Math.floor(amount * 1e6)).toString();
 
-    const transaction = await contract.transfer(toAddress, amountInSun).send();
+    const parameter = [
+      { type: 'address', value: toAddress },
+      { type: 'uint256', value: amountInSun }
+    ];
 
-    res.json({
-      success: true,
-      txid: transaction
-    });
+    const options = { feeLimit: 100000000 };
+    const transaction = await tronWeb.transactionBuilder.triggerSmartContract(
+      USDT_CONTRACT_ADDRESS,
+      'transfer(address,uint256)',
+      options,
+      parameter,
+      ADMIN_WALLET
+    );
+
+    const signedTx = await tronWeb.trx.sign(transaction.transaction);
+    const broadcast = await tronWeb.trx.sendRawTransaction(signedTx);
+
+    if (broadcast && broadcast.result) {
+      return res.json({
+        success: true,
+        txid: broadcast.txid
+      });
+    } else {
+      throw new Error(broadcast.message || "Failed to broadcast transaction");
+    }
   } catch (error) {
     console.error("Automated withdrawal error:", error);
     res.status(500).json({ error: error.message });
@@ -347,6 +367,9 @@ async function checkDeposits() {
           }
         }
       }
+      
+      // تأخير بسيط لمنع تجاوز حدود API (Rate Limit)
+      await new Promise(resolve => setTimeout(resolve, 200));
     }
   } catch (err) {
     console.error("Error checking deposits:", err);
