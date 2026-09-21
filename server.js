@@ -118,6 +118,11 @@ app.use(express.json());
 
 app.use("/routes/orders", ordersRouter);
 
+// 📌 مسار خفيف جداً لإبقاء السيرفر مستيقظاً (Ping Keep-Alive)
+app.get("/ping", (req, res) => {
+  res.send("pong");
+});
+
 app.get("/", (req, res) => {
   res.json({
     status: "online",
