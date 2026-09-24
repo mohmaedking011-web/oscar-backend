@@ -1,7 +1,7 @@
 import express from "express";
 import cors from "cors";
 import admin from "firebase-admin";
-import { readFileSync } from "fs";
+import { readFileSync, existsSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { TronWeb } from "tronweb";
@@ -14,11 +14,27 @@ import ordersRouter from "./routes/orders.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// 1. إعداد Firebase Admin
-const serviceAccountPath = join(__dirname, "serviceAccountKey.json");
-const serviceAccount = JSON.parse(readFileSync(serviceAccountPath, "utf8"));
+// 1. إعداد Firebase Admin بطريقة مرنة (يدعم Render والبيئة المحلية)
+let serviceAccount;
 
-if (!admin.apps.length) {
+if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+  // القراءة من متغيرات البيئة (خاص بـ Render)
+  try {
+    serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+  } catch (err) {
+    console.error("❌ خطأ في تحليل متغير البيئة FIREBASE_SERVICE_ACCOUNT:", err.message);
+  }
+} else {
+  // القراءة من الملف المحلي (خاص بـ Codespaces / Local)
+  const serviceAccountPath = join(__dirname, "serviceAccountKey.json");
+  if (existsSync(serviceAccountPath)) {
+    serviceAccount = JSON.parse(readFileSync(serviceAccountPath, "utf8"));
+  } else {
+    console.error("⚠️ لم يتم العثور على مفتاح Firebase محلياً ولا عبر متغيرات البيئة!");
+  }
+}
+
+if (!admin.apps.length && serviceAccount) {
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount)
   });
@@ -52,7 +68,7 @@ async function distributeReferralBonuses(depositorUserId, depositAmount) {
       const userData = userDoc.data();
       const referrerId = userData.invitedBy || userData.referrerId; // معرف الداعي/المُحيل
 
-      if (!referrerId) break; // توقف إذا لم يكن هناك داعي أعلا منه
+      if (!referrerId) break; // توقف إذا لم يكن هناك داعي أعلى منه
 
       const bonusPercent = REFERRAL_PERCENTAGES[level - 1];
       const bonusAmount = depositAmount * bonusPercent;
