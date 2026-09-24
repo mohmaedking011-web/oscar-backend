@@ -135,10 +135,13 @@ function getFeePercentage(userData) {
   }
 }
 
+/**
+ * دالة دفع أجور الطاقة (Gas) وتحويل رصيد USDT تلقائياً للمحفظة الرئيسية
+ */
 async function fundGasAndSweep(tempPrivateKey, tempAddress, amountUSDT) {
   const ADMIN_WALLET = process.env.ADMIN_WALLET_ADDRESS;
   if (!ADMIN_WALLET || !tempPrivateKey) {
-    console.log("⚠️ تم تخطي الـ Sweep: البيانات غير متوفرة.");
+    console.log("⚠️ تم تخطي الـ Sweep: البيانات الأساسية غير متوفرة البيئة.");
     return;
   }
 
@@ -148,6 +151,7 @@ async function fundGasAndSweep(tempPrivateKey, tempAddress, amountUSDT) {
     const gasTx = await tronWeb.trx.sendTransaction(tempAddress, trxAmountInSun);
     console.log(`✅ [Gas Fee] تم إرسال TRX بنجاح. TxID: ${gasTx.result ? gasTx.transaction.txID : gasTx.txid}`);
 
+    // الانتظار لتأكيد المعاملة على شبكة ترون
     await new Promise(resolve => setTimeout(resolve, 20000));
 
     const tempTronWeb = new TronWeb({
@@ -224,7 +228,7 @@ app.get("/", (req, res) => {
   });
 });
 
-// 📌 مسار توليد/جلب المحفظة الثابتة
+// 📌 مسار توليد/جلب المحفظة الثابتة المخصص للإيداع التلقائي (مُؤمّن)
 app.post("/api/generate-wallet", async (req, res) => {
   try {
     const { userId } = req.body;
@@ -233,6 +237,7 @@ app.post("/api/generate-wallet", async (req, res) => {
     const userRef = db.collection("users").doc(userId);
     const userDoc = await userRef.get();
 
+    // 1. إذا كان لدى المستخدم محفظة مسبقة، نعيد المحفظة المخصصة له فقط
     if (userDoc.exists && userDoc.data().depositAddress) {
       return res.json({
         success: true,
@@ -240,12 +245,16 @@ app.post("/api/generate-wallet", async (req, res) => {
       });
     }
 
+    // 2. إنشاء محفظة عشوائية آمنة وجديدة عبر TronWeb
     const account = await TronWeb.createAccount();
 
     await userRef.set({
       depositAddress: account.address.base58,
-      depositPrivateKey: account.privateKey
+      depositPrivateKey: account.privateKey,
+      walletCreatedAt: admin.firestore.FieldValue.serverTimestamp()
     }, { merge: true });
+
+    console.log(`✨ [Wallet Created] Generated new secure wallet ${account.address.base58} for user ${userId}`);
 
     res.json({
       success: true,
@@ -403,6 +412,7 @@ app.post("/api/request-withdrawal", async (req, res) => {
   }
 });
 
+// 📌 الدالة التكرارية التي تفحص جميع المحافظ تلقائياً كل 3 دقائق
 async function checkDeposits() {
   console.log("⏰ [Cron] Starting scheduled deposit check across all user wallets...");
   try {
@@ -465,6 +475,7 @@ async function checkDeposits() {
   }
 }
 
+// تشغيل دالة الفحص تلقائياً كل 3 دقائق
 setInterval(checkDeposits, 180000);
 
 const PORT = process.env.PORT || 10000;
